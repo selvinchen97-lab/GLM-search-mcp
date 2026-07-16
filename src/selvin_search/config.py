@@ -291,6 +291,11 @@ class Config:
     def api_cancel_grace_seconds(self) -> float:
         return float(_env("SELVIN_API_CANCEL_GRACE_SECONDS", default="0.5") or "0.5")
 
+    @property
+    def online_use_search_tool(self) -> bool:
+        default = "true" if "bigmodel.cn" in self.online_api_url else "false"
+        return _bool("SELVIN_ONLINE_USE_SEARCH_TOOL", default=(default == "true"))
+
     # ── reporting ──────────────────────────────────────────────────────
 
     @staticmethod
@@ -328,6 +333,7 @@ class Config:
             "SELVIN_FETCH_ONLINE_SOURCE_COUNT": self.online_source_fetch_count,
             "SELVIN_FETCH_ONLINE_SOURCE_CHARS": self.online_source_fetch_chars,
             "SELVIN_API_CANCEL_GRACE_SECONDS": self.api_cancel_grace_seconds,
+            "SELVIN_ONLINE_USE_SEARCH_TOOL": self.online_use_search_tool,
             "ZHIPU_SEARCH_ENGINE": self.zhipu_search_engine,
             "ZHIPU_SEARCH_COUNT": self.zhipu_search_count,
             "ZHIPU_CONTENT_SIZE": self.zhipu_content_size,

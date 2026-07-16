@@ -33,6 +33,21 @@ class ModelOnlineSearchProvider(BaseSearchProvider):
             "stream": False,
             "max_tokens": config.max_tokens,
         }
+        if config.online_use_search_tool:
+            payload["tools"] = [
+                {
+                    "type": "web_search",
+                    "web_search": {
+                        "enable": True,
+                        "search_engine": config.zhipu_search_engine,
+                        "search_result": True,
+                        "count": config.zhipu_search_count,
+                        "search_recency_filter": config.zhipu_recency_filter,
+                        "content_size": config.zhipu_content_size,
+                    },
+                }
+            ]
+            payload["tool_choice"] = "auto"
 
         timeout = httpx.Timeout(connect=6.0, read=120.0, write=10.0, pool=None)
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
@@ -53,7 +68,11 @@ class ModelOnlineSearchProvider(BaseSearchProvider):
         message = (choices[0] or {}).get("message") or {}
         content = message.get("content")
         if isinstance(content, str):
-            return content
+            reasoning = message.get("reasoning_content")
+            if content.strip():
+                return content
+            if isinstance(reasoning, str):
+                return reasoning
         if isinstance(content, list):
             parts = []
             for item in content:
