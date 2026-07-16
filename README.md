@@ -16,7 +16,7 @@ Selvin Search MCP 是一个面向 Codex 的本地联网搜索 MCP。它不会让
 项目不在代码里保存 API Key，也不在代码里写死具体模型名。运行前需要创建本地 `.env`：
 
 ```bash
-cd /Users/selvinchen/Documents/vibe\ coding/final/z-search/selvin-search-mcp
+cd selvin-search-mcp
 cp .env.example .env
 ```
 
@@ -52,8 +52,7 @@ SELVIN_MAX_TOKENS=2600
 ## 本地运行
 
 ```bash
-cd /Users/selvinchen/Documents/vibe\ coding/final
-uv run --project ./z-search/selvin-search-mcp selvin-search
+uv run --project . selvin-search
 ```
 
 ## Codex 配置模板
@@ -66,7 +65,7 @@ command = "uv"
 args = [
   "run",
   "--project",
-  "/Users/selvinchen/Documents/vibe coding/final/z-search/selvin-search-mcp",
+  ".",
   "selvin-search"
 ]
 ```
@@ -151,7 +150,7 @@ SELVIN_MAX_TOKENS = "2600"
 
 | 类型 | 路径 |
 | --- | --- |
-| 项目目录 | `/Users/selvinchen/Documents/vibe coding/final/z-search/selvin-search-mcp` |
+| 项目目录 | 当前仓库根目录 |
 | Python 包 | `src/selvin_search` |
 | 本地环境变量 | `.env` |
 | 环境变量模板 | `.env.example` |
@@ -164,16 +163,16 @@ SELVIN_MAX_TOKENS = "2600"
 编译检查：
 
 ```bash
-uv run --project ./z-search/selvin-search-mcp python -m py_compile \
-  z-search/selvin-search-mcp/src/selvin_search/config.py \
-  z-search/selvin-search-mcp/src/selvin_search/server.py \
-  z-search/selvin-search-mcp/src/selvin_search/providers/zhipu.py
+uv run --project . python -m py_compile \
+  src/selvin_search/config.py \
+  src/selvin_search/server.py \
+  src/selvin_search/providers/zhipu.py
 ```
 
 配置读取检查：
 
 ```bash
-uv run --project ./z-search/selvin-search-mcp python -c \
+uv run --project . python -c \
 'from selvin_search.config import config; print(config.provider); print(config.api_url); print(config.model)'
 ```
 
