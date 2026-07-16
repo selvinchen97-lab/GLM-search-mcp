@@ -133,14 +133,14 @@ SELVIN_MAX_TOKENS=2600
 
 ## 模式 C：模型联网模式
 
-这个模式不先调用搜索 API，而是直接调用一个支持联网能力的聊天模型。模型自己搜索、自己写答案和来源，MCP 再从模型回答里解析来源链接。
+这个模式不先调用搜索 API，而是直接调用一个支持联网能力的聊天模型。模型需要返回结构化 JSON，MCP 从 JSON 的 `sources[].url` 中读取来源链接。
 
 ```text
 用户问题
   -> 支持联网的模型 /chat/completions
-  -> 模型自己搜索并回答
-  -> 模型在 ## Sources 写来源链接
-  -> MCP 从模型回答中解析 links
+  -> 模型自己搜索并返回 JSON：answer + sources[{title,url}]
+  -> MCP 从 JSON 中解析 URL
+  -> MCP 抓取 URL 页面并抽取正文
   -> MCP get_sources 返回解析后的来源列表
 ```
 
@@ -159,7 +159,39 @@ SELVIN_MAX_TOKENS=2600
 
 - 这个模式要求你配置的模型/平台真的支持联网搜索。
 - 如果模型没有联网能力，它可能只能回答“无法访问实时网络”，或凭记忆回答。
-- MCP 会解析模型回答里的 `## Sources`、Markdown 链接或 URL，但无法像 API 搜索模式那样证明这些来源一定来自结构化搜索接口。
+- 如果模型没有按 JSON 返回精确 URL，MCP 会拒绝该路线的结果。
+- MCP 会抓取模型返回的 URL 并尝试归档正文，但网页是否允许读取取决于目标网站。
+
+## 当前已知问题
+
+### 403 Forbidden
+
+`403 Forbidden` 表示 MCP 已经访问到目标网站，但网站服务器拒绝返回页面内容。常见原因包括：
+
+- 网站禁止脚本或爬虫访问
+- 网站要求完整浏览器环境、Cookie、登录状态或 JavaScript 校验
+- 网站限制 User-Agent、IP、地区或访问频率
+- URL 指向的页面不存在公开内容，但服务器统一返回 403
+
+当前 MCP 的网页读取方式是普通 HTTP 请求：
+
+```text
+httpx GET URL
+  -> 获取 HTML 或文本
+  -> 去掉脚本、样式和标签
+  -> 抽取正文
+```
+
+这种方式遇到 OpenAI、Cloudflare、防爬页面或需要 JS 渲染的页面时，可能只能得到 `archive_status=failed` 和 `archive_error=403 Forbidden`，无法写入 `archive_content`。
+
+后续可增强方向：
+
+- 增加更完整的浏览器请求头，例如 `Accept-Language`、`Referer`、压缩支持等
+- 增加备用网页读取服务，例如网页转 Markdown 的 reader/proxy
+- 增加 Playwright/Chrome 渲染读取，处理需要 JavaScript 或 Cookie 的页面
+- 对官方文档类来源增加专门读取器或官方 API 读取器
+
+当 `archive_status=failed` 时，最终回答应明确标记“来源 URL 存在，但页面正文未归档验证”，不能把模型摘要当作已完全验证的网页事实。
 
 ## 本地运行
 
