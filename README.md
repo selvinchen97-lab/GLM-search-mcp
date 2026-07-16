@@ -39,7 +39,9 @@ cp .env.example .env
   -> 路线 2：支持联网的模型 /chat/completions
   -> 如果路线 2 先返回有效内容，MCP 取消尚未完成的路线 1
   -> 如果路线 1 已经完成并有内容，MCP 同时保留两边结果
-  -> MCP 解析模型联网回答中的来源链接
+  -> MCP 要求模型联网回答返回 JSON：answer + sources[{title,url}]
+  -> 如果路线 2 没有返回精确 URL，MCP 拒绝该路线的联网结果
+  -> MCP 解析 JSON sources 中的 URL
   -> MCP 抓取这些来源页面，抽取正文并归档
   -> MCP 合并 API 来源、模型来源和归档正文
   -> 用户配置的模型基于归档内容和两边结果做最终整理
@@ -85,8 +87,8 @@ SELVIN_ONLINE_MODEL=<online-capable-model-name>
 
 - API 路线：来源来自智谱 `/web_search` 的 `search_result`
 - 模型内置路线：智谱/BigModel 默认通过 `chat/completions` 的 `tools.web_search` 触发搜索；其他 OpenAI-compatible 平台默认不传该工具，除非显式设置 `SELVIN_ONLINE_USE_SEARCH_TOOL=true`
-- 模型内置路线会在提示词中强制要求输出原始页面的 exact URLs；如果上游模型或搜索工具不暴露 URL，MCP 会把这次结果视为缺少可验证来源
-- 模型内置路线的来源来自模型回答里的 `## Sources`、Markdown 链接或 URL
+- 模型内置路线必须返回 JSON，格式为 `{"answer":"...","sources":[{"title":"...","url":"https://..."}],"error":""}`
+- 如果模型内置路线没有返回精确 URL，MCP 会把它标记为失败，不进入网页抓取和归档
 - 模型内置路线返回的 URL 会被 MCP 再访问一次，成功时会写入 `archive_status=fetched` 和 `archive_content`
 - `get_sources(session_id)` 返回的是两边来源合并去重后的列表
 

@@ -1,3 +1,6 @@
+import json
+import re
+
 import httpx
 
 from .base import BaseSearchProvider
@@ -24,10 +27,10 @@ class ModelOnlineSearchProvider(BaseSearchProvider):
         if platform:
             platform_prompt = f"\n\nFocus on this source family or platform: {platform}"
         source_prompt = (
-            "\n\nReturn a final `## Sources` section with the exact URLs of the "
-            "original pages you used. Do not provide generic homepages or source "
-            "names. If no exact URLs are available, say so using the required "
-            "`No verifiable source URLs were available from this model call.` line."
+            "\n\nReturn only JSON with keys `answer`, `sources`, and `error`. "
+            "`sources` must contain exact original page URLs. If you cannot expose "
+            "exact URLs, return {\"answer\":\"\",\"sources\":[],"
+            "\"error\":\"online_model_did_not_return_urls\"}."
         )
 
         payload = {
@@ -65,7 +68,8 @@ class ModelOnlineSearchProvider(BaseSearchProvider):
             response.raise_for_status()
             data = response.json()
 
-        return self._extract_answer(data).strip()
+        raw_answer = self._extract_answer(data).strip()
+        return self._normalize_structured_answer(raw_answer)
 
     def _extract_answer(self, data: dict) -> str:
         choices = data.get("choices") or []
@@ -88,3 +92,71 @@ class ModelOnlineSearchProvider(BaseSearchProvider):
                     parts.append(item)
             return "\n".join(parts)
         return ""
+
+    def _normalize_structured_answer(self, text: str) -> str:
+        payload = self._parse_json_payload(text)
+        if not isinstance(payload, dict):
+            return (
+                "模型内置联网链路没有返回可解析 JSON；"
+                "因此本次模型联网结果未通过 URL 验证。"
+            )
+
+        answer = payload.get("answer")
+        if not isinstance(answer, str):
+            answer = ""
+        sources = self._normalize_sources(payload.get("sources"))
+        if not sources:
+            error = payload.get("error")
+            if not isinstance(error, str) or not error:
+                error = "online_model_did_not_return_urls"
+            return f"模型内置联网链路未返回可验证 URL：{error}"
+
+        source_lines = "\n".join(
+            f"- [{item.get('title') or item['url']}]({item['url']})"
+            for item in sources
+        )
+        return answer.strip() + "\n\n## Sources\n" + source_lines
+
+    def _parse_json_payload(self, text: str) -> dict | None:
+        raw = (text or "").strip()
+        if not raw:
+            return None
+
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE).strip()
+            raw = re.sub(r"\s*```$", "", raw).strip()
+
+        try:
+            return json.loads(raw)
+        except Exception:
+            pass
+
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return None
+        try:
+            return json.loads(raw[start : end + 1])
+        except Exception:
+            return None
+
+    def _normalize_sources(self, data) -> list[dict]:
+        if not isinstance(data, list):
+            return []
+        sources: list[dict] = []
+        seen: set[str] = set()
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            url = item.get("url")
+            if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+                continue
+            if url in seen:
+                continue
+            seen.add(url)
+            out = {"url": url}
+            title = item.get("title") or item.get("name")
+            if isinstance(title, str) and title.strip():
+                out["title"] = title.strip()
+            sources.append(out)
+        return sources

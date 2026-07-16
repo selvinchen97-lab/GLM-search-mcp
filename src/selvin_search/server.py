@@ -229,6 +229,9 @@ def _has_search_signal(answer: str, sources: list[dict]) -> bool:
         "无实时联网工具可用",
         "没有返回可用搜索结果",
         "未独立联网验证",
+        "没有返回可解析 JSON",
+        "未返回可验证 URL",
+        "online_model_did_not_return_urls",
     )
     return not any(marker in text for marker in weak_markers)
 

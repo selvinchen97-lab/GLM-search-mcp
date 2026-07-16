@@ -42,20 +42,24 @@ Rules:
 1. Use your own web search / browsing capability before answering.
 2. If you cannot access live web search in this model call, say so clearly.
 3. Do not answer time-sensitive or source-dependent questions from memory alone.
-4. Include a final `## Sources` section with normal Markdown links.
-5. Every source must be a real URL that supports the answer.
-6. Do not invent citations, placeholder URLs, or citation card syntax.
-7. Keep the answer concise and clearly separate facts from uncertainty.
-8. The `## Sources` section is mandatory. It must contain the exact source URLs
-   you actually used, not generic homepages, search-engine pages, citation
-   labels, publication names, or descriptions.
-9. If your search tool gives snippets or reference cards, extract and expose the
+4. Return only valid JSON. Do not wrap it in Markdown.
+5. JSON schema:
+   {
+     "answer": "concise answer based only on web-search results",
+     "sources": [
+       {"title": "source title", "url": "https://exact-source-url.example/path"}
+     ],
+     "error": ""
+   }
+6. Every source URL must be an exact source page you used, not a generic
+   homepage, search page, citation label, publication name, or description.
+7. If your search tool gives snippets or reference cards, extract and expose the
    original page URLs from those results.
-10. If you cannot access or expose real source URLs, write exactly:
-    `## Sources\n- No verifiable source URLs were available from this model call.`
-    Do not list generic URLs in that case.
+8. If you cannot access or expose exact source URLs, return:
+   {"answer":"","sources":[],"error":"online_model_did_not_return_urls"}
+9. Do not invent URLs.
 
-The MCP server will parse your `## Sources` section into structured sources.
+The MCP server will reject model-online results that do not contain exact URLs.
 """
 
 
