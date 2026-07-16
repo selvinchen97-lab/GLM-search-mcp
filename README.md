@@ -8,7 +8,7 @@ Selvin Search MCP 是一个面向 Codex 的本地联网搜索 MCP。它支持三
 | API 搜索模式 | `SELVIN_SEARCH_MODE=api` | 智谱 Web Search API | 智谱 `/web_search` 返回的 `search_result` |
 | 模型联网模式 | `SELVIN_SEARCH_MODE=model_online` | 支持联网能力的模型自己搜索 | 模型回答中的 `## Sources` 链接，由 MCP 解析 |
 
-默认推荐 `parallel` 模式：MCP 会同时调用 API 搜索链路和模型内置联网链路，合并链接后再让模型做最终整理。`api` 模式更可控，`model_online` 模式更依赖模型/平台自己的联网能力。
+默认推荐 `parallel` 模式：MCP 会同时启动 API 搜索链路和模型内置联网链路；如果模型内置联网先返回有效内容，MCP 会取消尚未完成的 API 搜索。随后 MCP 会抓取模型内置联网返回的来源页面，解析正文并交给模型做最终整理。`api` 模式更可控，`model_online` 模式更依赖模型/平台自己的联网能力。
 
 ## 敏感配置
 
@@ -31,17 +31,20 @@ cp .env.example .env
 
 ## 模式 A：并行搜索模式
 
-这个模式同时执行两条搜索路线：
+这个模式同时启动两条搜索路线，但模型内置联网链路优先：
 
 ```text
 用户问题
   -> 路线 1：智谱 Web Search API /web_search
   -> 路线 2：支持联网的模型 /chat/completions
-  -> MCP 分别解析两边回答和来源
-  -> MCP 合并来源链接并去重
-  -> 用户配置的模型基于两边结果做最终整理
+  -> 如果路线 2 先返回有效内容，MCP 取消尚未完成的路线 1
+  -> 如果路线 1 已经完成并有内容，MCP 同时保留两边结果
+  -> MCP 解析模型联网回答中的来源链接
+  -> MCP 抓取这些来源页面，抽取正文并归档
+  -> MCP 合并 API 来源、模型来源和归档正文
+  -> 用户配置的模型基于归档内容和两边结果做最终整理
   -> MCP web_search 返回最终 answer + session_id
-  -> MCP get_sources 返回合并后的来源列表
+  -> MCP get_sources 返回合并后的来源列表和抓取状态
 ```
 
 `.env` 示例：
@@ -62,6 +65,11 @@ ZHIPU_SEARCH_COUNT=5
 ZHIPU_CONTENT_SIZE=high
 ZHIPU_SEARCH_RECENCY_FILTER=noLimit
 SELVIN_MAX_TOKENS=2600
+
+SELVIN_API_CANCEL_GRACE_SECONDS=0.5
+SELVIN_FETCH_ONLINE_SOURCES=true
+SELVIN_FETCH_ONLINE_SOURCE_COUNT=5
+SELVIN_FETCH_ONLINE_SOURCE_CHARS=3000
 ```
 
 如果模型内置联网链路使用的是另一个 OpenAI-compatible 平台，可以单独覆盖：
@@ -76,6 +84,7 @@ SELVIN_ONLINE_MODEL=<online-capable-model-name>
 
 - API 路线：来源来自智谱 `/web_search` 的 `search_result`
 - 模型内置路线：来源来自模型回答里的 `## Sources`、Markdown 链接或 URL
+- 模型内置路线返回的 URL 会被 MCP 再访问一次，成功时会写入 `archive_status=fetched` 和 `archive_content`
 - `get_sources(session_id)` 返回的是两边来源合并去重后的列表
 
 ## 模式 B：API 搜索模式

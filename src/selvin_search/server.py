@@ -1,4 +1,6 @@
 import sys
+import re
+from html.parser import HTMLParser
 from pathlib import Path
 
 # 支持直接运行：添加 src 目录到 Python 路径
@@ -35,6 +37,31 @@ mcp = FastMCP("selvin-search")
 _SOURCES_CACHE = SourcesCache(max_size=256)
 _AVAILABLE_MODELS_CACHE: dict[tuple[str, str], list[str]] = {}
 _AVAILABLE_MODELS_LOCK = asyncio.Lock()
+
+
+class _TextExtractingHTMLParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self._skip_depth = 0
+        self._parts: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() in {"script", "style", "noscript", "svg"}:
+            self._skip_depth += 1
+
+    def handle_endtag(self, tag):
+        if tag.lower() in {"script", "style", "noscript", "svg"} and self._skip_depth:
+            self._skip_depth -= 1
+
+    def handle_data(self, data):
+        if self._skip_depth:
+            return
+        text = (data or "").strip()
+        if text:
+            self._parts.append(text)
+
+    def text(self) -> str:
+        return re.sub(r"\s+", " ", " ".join(self._parts)).strip()
 
 
 async def _fetch_available_models(api_url: str, api_key: str) -> list[str]:
@@ -94,6 +121,22 @@ def _format_sources_for_synthesis(sources: list[dict]) -> str:
     return "\n\n".join(blocks)
 
 
+def _format_archives_for_synthesis(archives: list[dict]) -> str:
+    blocks: list[str] = []
+    for idx, item in enumerate(archives, start=1):
+        parts = [
+            f"[{idx}] {item.get('title') or item.get('url')}",
+            f"URL: {item.get('url')}",
+            f"Fetch status: {item.get('archive_status', 'unknown')}",
+        ]
+        if item.get("archive_content"):
+            parts.append(f"Content: {item['archive_content']}")
+        elif item.get("archive_error"):
+            parts.append(f"Error: {item['archive_error']}")
+        blocks.append("\n".join(parts))
+    return "\n\n".join(blocks)
+
+
 def _tag_sources(sources: list[dict], provider: str) -> list[dict]:
     tagged: list[dict] = []
     for item in sources:
@@ -105,6 +148,103 @@ def _tag_sources(sources: list[dict], provider: str) -> list[dict]:
     return tagged
 
 
+def _extract_page_text(content_type: str, body: str) -> str:
+    if "html" not in (content_type or "").lower():
+        return re.sub(r"\s+", " ", body or "").strip()
+    parser = _TextExtractingHTMLParser()
+    try:
+        parser.feed(body or "")
+        return parser.text()
+    except Exception:
+        return re.sub(r"<[^>]+>", " ", body or "").strip()
+
+
+async def _fetch_one_source_archive(client, source: dict) -> dict:
+    url = source.get("url")
+    out = dict(source)
+    if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+        out["archive_status"] = "skipped"
+        out["archive_error"] = "invalid_url"
+        return out
+
+    try:
+        response = await client.get(
+            url,
+            headers={
+                "User-Agent": "selvin-search-mcp/0.1 (+https://github.com/selvinchen97-lab/GLM-search-mcp)",
+                "Accept": "text/html, text/plain, application/xhtml+xml;q=0.9, */*;q=0.8",
+            },
+        )
+        response.raise_for_status()
+        text = _extract_page_text(response.headers.get("content-type", ""), response.text)
+        out["archive_status"] = "fetched"
+        out["archive_content"] = text[: config.online_source_fetch_chars]
+    except Exception as exc:
+        out["archive_status"] = "failed"
+        out["archive_error"] = str(exc)[:300]
+    return out
+
+
+async def _fetch_online_source_archives(sources: list[dict]) -> list[dict]:
+    if not config.online_source_fetch_enabled:
+        return []
+
+    targets = [
+        item
+        for item in sources
+        if isinstance(item, dict) and item.get("provider") == "model_online"
+    ][: max(config.online_source_fetch_count, 0)]
+    if not targets:
+        return []
+
+    import httpx
+
+    timeout = httpx.Timeout(connect=6.0, read=20.0, write=10.0, pool=None)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        return await asyncio.gather(
+            *(_fetch_one_source_archive(client, source) for source in targets),
+            return_exceptions=False,
+        )
+
+
+async def _collect_task_result(task: asyncio.Task) -> str:
+    try:
+        result = await task
+    except asyncio.CancelledError:
+        return ""
+    except Exception:
+        return ""
+    return "" if isinstance(result, Exception) else result
+
+
+def _has_search_signal(answer: str, sources: list[dict]) -> bool:
+    if sources:
+        return True
+    text = (answer or "").strip()
+    if not text:
+        return False
+    weak_markers = (
+        "无法访问实时网络",
+        "未能实际访问网页",
+        "无实时联网工具可用",
+        "没有返回可用搜索结果",
+        "未独立联网验证",
+    )
+    return not any(marker in text for marker in weak_markers)
+
+
+async def _cancel_task(task: asyncio.Task) -> None:
+    if task.done():
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        pass
+
+
 async def _synthesize_parallel_answer(
     api_url: str,
     api_key: str,
@@ -113,6 +253,7 @@ async def _synthesize_parallel_answer(
     api_answer: str,
     online_answer: str,
     sources: list[dict],
+    archives: list[dict],
 ) -> str:
     import httpx
 
@@ -132,7 +273,9 @@ async def _synthesize_parallel_answer(
                     "## 模型内置联网链路返回\n"
                     f"{online_answer or '无可用回答'}\n\n"
                     "## MCP 已合并来源\n"
-                    f"{_format_sources_for_synthesis(sources) or '无可用来源'}"
+                    f"{_format_sources_for_synthesis(sources) or '无可用来源'}\n\n"
+                    "## MCP 二次抓取并解析的模型联网来源正文\n"
+                    f"{_format_archives_for_synthesis(archives) or '无可用归档正文'}"
                 ),
             },
         ],
@@ -247,19 +390,45 @@ async def web_search(
             config.online_api_key,
             config.online_model,
         )
-        api_result, online_result = await asyncio.gather(
-            api_provider.search(query, platform),
-            online_provider.search(query, platform),
-            return_exceptions=True,
-        )
+        api_task = asyncio.create_task(api_provider.search(query, platform))
+        online_task = asyncio.create_task(online_provider.search(query, platform))
+        done, _ = await asyncio.wait({api_task, online_task}, return_when=asyncio.FIRST_COMPLETED)
 
-        api_raw = "" if isinstance(api_result, Exception) else api_result
-        online_raw = "" if isinstance(online_result, Exception) else online_result
+        api_raw = ""
+        online_raw = ""
+        if online_task in done:
+            online_raw = await _collect_task_result(online_task)
+            online_answer_probe, online_sources_probe = split_answer_and_sources(online_raw)
+            if _has_search_signal(online_answer_probe, online_sources_probe):
+                if api_task.done():
+                    api_raw = await _collect_task_result(api_task)
+                else:
+                    try:
+                        api_raw = await asyncio.wait_for(
+                            asyncio.shield(api_task),
+                            timeout=max(config.api_cancel_grace_seconds, 0),
+                        )
+                    except asyncio.TimeoutError:
+                        await _cancel_task(api_task)
+                    except Exception:
+                        api_raw = ""
+            else:
+                api_raw = await _collect_task_result(api_task)
+        else:
+            api_raw = await _collect_task_result(api_task)
+            online_raw = await _collect_task_result(online_task)
+
         api_answer, api_sources = split_answer_and_sources(api_raw)
         online_answer, online_sources = split_answer_and_sources(online_raw)
         api_sources = _tag_sources(api_sources, "api")
         online_sources = _tag_sources(online_sources, "model_online")
         all_sources = merge_sources(api_sources, online_sources)
+        archives = await _fetch_online_source_archives(all_sources)
+        archived_by_url = {item.get("url"): item for item in archives if item.get("url")}
+        all_sources = [
+            {**item, **archived_by_url.get(item.get("url"), {})}
+            for item in all_sources
+        ]
 
         try:
             answer = await _synthesize_parallel_answer(
@@ -270,6 +439,7 @@ async def web_search(
                 api_answer=api_answer,
                 online_answer=online_answer,
                 sources=all_sources,
+                archives=archives,
             )
         except Exception:
             answer = ""

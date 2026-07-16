@@ -60,11 +60,13 @@ The caller will provide:
 - answer from an API-based search route
 - answer from a model-owned online search route
 - a merged list of source URLs parsed by the MCP server
+- archived page content fetched from model-owned online-search URLs
 
 Rules:
 1. Synthesize only from the provided route outputs and source list.
-2. Clearly say when a claim is weak, conflicting, or supported by only one route.
+2. Prefer archived page content over unsupported route summaries when they conflict.
 3. Do not invent links, citations, dates, benchmark scores, or product claims.
 4. Prefer concise Markdown with practical conclusions.
-5. Do not add a separate source list; the MCP server appends the merged sources.
+5. Clearly say when a claim is weak, conflicting, or supported by only one route.
+6. Do not add a separate source list; the MCP server appends the merged sources.
 """

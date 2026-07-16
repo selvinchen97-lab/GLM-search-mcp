@@ -275,6 +275,22 @@ class Config:
     def rank_max_tokens(self) -> int:
         return int(_env("SELVIN_RANK_MAX_TOKENS", default="128") or "128")
 
+    @property
+    def online_source_fetch_enabled(self) -> bool:
+        return _bool("SELVIN_FETCH_ONLINE_SOURCES", default=True)
+
+    @property
+    def online_source_fetch_count(self) -> int:
+        return int(_env("SELVIN_FETCH_ONLINE_SOURCE_COUNT", default="5") or "5")
+
+    @property
+    def online_source_fetch_chars(self) -> int:
+        return int(_env("SELVIN_FETCH_ONLINE_SOURCE_CHARS", default="3000") or "3000")
+
+    @property
+    def api_cancel_grace_seconds(self) -> float:
+        return float(_env("SELVIN_API_CANCEL_GRACE_SECONDS", default="0.5") or "0.5")
+
     # ── reporting ──────────────────────────────────────────────────────
 
     @staticmethod
@@ -308,6 +324,10 @@ class Config:
             "SELVIN_ONLINE_MODEL": _env("SELVIN_ONLINE_MODEL") or "未单独配置，默认复用 SELVIN_MODEL",
             "SELVIN_MAX_TOKENS": self.max_tokens,
             "SELVIN_RANK_MAX_TOKENS": self.rank_max_tokens,
+            "SELVIN_FETCH_ONLINE_SOURCES": self.online_source_fetch_enabled,
+            "SELVIN_FETCH_ONLINE_SOURCE_COUNT": self.online_source_fetch_count,
+            "SELVIN_FETCH_ONLINE_SOURCE_CHARS": self.online_source_fetch_chars,
+            "SELVIN_API_CANCEL_GRACE_SECONDS": self.api_cancel_grace_seconds,
             "ZHIPU_SEARCH_ENGINE": self.zhipu_search_engine,
             "ZHIPU_SEARCH_COUNT": self.zhipu_search_count,
             "ZHIPU_CONTENT_SIZE": self.zhipu_content_size,
