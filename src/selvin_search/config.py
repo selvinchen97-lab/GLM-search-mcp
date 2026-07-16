@@ -7,7 +7,8 @@ Provider modes (SELVIN_PROVIDER):
   - custom:          user supplies SELVIN_API_URL & SELVIN_MODEL themselves
 
 Search modes (SELVIN_SEARCH_MODE):
-  - api (default):          call provider search API first, then summarize
+  - parallel (default):     call provider search API and online-capable model in parallel
+  - api:                    call provider search API first, then summarize
   - model_online:           ask an online-capable chat model to search directly
 """
 
@@ -130,10 +131,10 @@ class Config:
 
     @property
     def search_mode(self) -> str:
-        v = (_env("SELVIN_SEARCH_MODE", default="api") or "api").strip().lower()
-        if v in {"api", "model_online"}:
+        v = (_env("SELVIN_SEARCH_MODE", default="parallel") or "parallel").strip().lower()
+        if v in {"parallel", "api", "model_online"}:
             return v
-        return "api"
+        return "parallel"
 
     @property
     def api_url(self) -> str:
@@ -150,6 +151,17 @@ class Config:
         if not key:
             raise ValueError(f"API Key 未配置。\n{self._SETUP_HINT}")
         return key
+
+    @property
+    def online_api_url(self) -> str:
+        return _env("SELVIN_ONLINE_API_URL") or self.api_url
+
+    @property
+    def online_api_key(self) -> str:
+        key = _env("SELVIN_ONLINE_API_KEY")
+        if key:
+            return key
+        return self.api_key
 
     def provider_extra_headers(self) -> dict[str, str]:
         return {}
@@ -249,6 +261,13 @@ class Config:
         self._cached_model = self._apply_model_suffix(model)
 
     @property
+    def online_model(self) -> str:
+        model = _env("SELVIN_ONLINE_MODEL")
+        if model:
+            return self._apply_model_suffix(model)
+        return self.model
+
+    @property
     def max_tokens(self) -> int:
         return int(_env("SELVIN_MAX_TOKENS", default="1800") or "1800")
 
@@ -284,6 +303,9 @@ class Config:
             "SELVIN_API_URL": api_url,
             "SELVIN_API_KEY": api_key_masked,
             "SELVIN_MODEL": model,
+            "SELVIN_ONLINE_API_URL": _env("SELVIN_ONLINE_API_URL") or "未单独配置，默认复用 SELVIN_API_URL",
+            "SELVIN_ONLINE_API_KEY": self._mask_api_key(_env("SELVIN_ONLINE_API_KEY")),
+            "SELVIN_ONLINE_MODEL": _env("SELVIN_ONLINE_MODEL") or "未单独配置，默认复用 SELVIN_MODEL",
             "SELVIN_MAX_TOKENS": self.max_tokens,
             "SELVIN_RANK_MAX_TOKENS": self.rank_max_tokens,
             "ZHIPU_SEARCH_ENGINE": self.zhipu_search_engine,

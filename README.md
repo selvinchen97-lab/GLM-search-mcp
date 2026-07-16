@@ -1,13 +1,14 @@
 # selvin-search-mcp
 
-Selvin Search MCP 是一个面向 Codex 的本地联网搜索 MCP。它支持两种搜索链路：
+Selvin Search MCP 是一个面向 Codex 的本地联网搜索 MCP。它支持三种搜索链路：
 
 | 模式 | 配置 | 搜索是谁做的 | Sources 从哪里来 |
 | --- | --- | --- | --- |
+| 并行搜索模式 | `SELVIN_SEARCH_MODE=parallel` | 智谱 Web Search API + 支持联网能力的模型同时搜索 | 两条链路返回的来源合并去重 |
 | API 搜索模式 | `SELVIN_SEARCH_MODE=api` | 智谱 Web Search API | 智谱 `/web_search` 返回的 `search_result` |
 | 模型联网模式 | `SELVIN_SEARCH_MODE=model_online` | 支持联网能力的模型自己搜索 | 模型回答中的 `## Sources` 链接，由 MCP 解析 |
 
-默认推荐 `api` 模式，因为 sources 来自搜索接口的结构化结果，更容易核验。`model_online` 模式适合接入“模型自己联网搜索”的平台能力。
+默认推荐 `parallel` 模式：MCP 会同时调用 API 搜索链路和模型内置联网链路，合并链接后再让模型做最终整理。`api` 模式更可控，`model_online` 模式更依赖模型/平台自己的联网能力。
 
 ## 敏感配置
 
@@ -28,7 +29,56 @@ cp .env.example .env
 
 `SELVIN_MODEL` 是必填项；不配置模型名时 MCP 会返回配置错误。
 
-## 模式 A：API 搜索模式
+## 模式 A：并行搜索模式
+
+这个模式同时执行两条搜索路线：
+
+```text
+用户问题
+  -> 路线 1：智谱 Web Search API /web_search
+  -> 路线 2：支持联网的模型 /chat/completions
+  -> MCP 分别解析两边回答和来源
+  -> MCP 合并来源链接并去重
+  -> 用户配置的模型基于两边结果做最终整理
+  -> MCP web_search 返回最终 answer + session_id
+  -> MCP get_sources 返回合并后的来源列表
+```
+
+`.env` 示例：
+
+```bash
+SELVIN_PROVIDER=zhipu
+SELVIN_SEARCH_MODE=parallel
+SELVIN_API_URL=https://open.bigmodel.cn/api/paas/v4
+
+SELVIN_API_KEY=<your-api-key>
+# 或：
+# ZHIPU_API_KEY=<your-api-key>
+
+SELVIN_MODEL=<your-model-name>
+
+ZHIPU_SEARCH_ENGINE=search_pro
+ZHIPU_SEARCH_COUNT=5
+ZHIPU_CONTENT_SIZE=high
+ZHIPU_SEARCH_RECENCY_FILTER=noLimit
+SELVIN_MAX_TOKENS=2600
+```
+
+如果模型内置联网链路使用的是另一个 OpenAI-compatible 平台，可以单独覆盖：
+
+```bash
+SELVIN_ONLINE_API_URL=<openai-compatible-api-base-url>
+SELVIN_ONLINE_API_KEY=<your-online-model-api-key>
+SELVIN_ONLINE_MODEL=<online-capable-model-name>
+```
+
+判断是否真的联网：
+
+- API 路线：来源来自智谱 `/web_search` 的 `search_result`
+- 模型内置路线：来源来自模型回答里的 `## Sources`、Markdown 链接或 URL
+- `get_sources(session_id)` 返回的是两边来源合并去重后的列表
+
+## 模式 B：API 搜索模式
 
 这个模式先调用智谱 `/web_search`，拿到真实 `search_result`，再把搜索结果交给你配置的模型总结。
 
@@ -67,7 +117,7 @@ SELVIN_MAX_TOKENS=2600
 - `get_sources(session_id).sources_count` 与 `web_search.sources_count` 一致
 - 每条来源来自智谱 `/web_search` 的 `search_result`
 
-## 模式 B：模型联网模式
+## 模式 C：模型联网模式
 
 这个模式不先调用搜索 API，而是直接调用一个支持联网能力的聊天模型。模型自己搜索、自己写答案和来源，MCP 再从模型回答里解析来源链接。
 
@@ -123,7 +173,7 @@ args = [
 ```toml
 [mcp_servers.selvin-search.env]
 SELVIN_PROVIDER = "zhipu"
-SELVIN_SEARCH_MODE = "api"
+SELVIN_SEARCH_MODE = "parallel"
 SELVIN_API_URL = "https://open.bigmodel.cn/api/paas/v4"
 SELVIN_API_KEY = "<your-api-key>"
 SELVIN_MODEL = "<your-model-name>"
@@ -166,6 +216,7 @@ SELVIN_MAX_TOKENS = "2600"
 
 返回当前配置，并做一次连通性测试：
 
+- `parallel` 模式：同时请求 `{SELVIN_API_URL}/web_search` 和在线模型接口的 `/models`
 - `api` 模式：请求 `{SELVIN_API_URL}/web_search`
 - `model_online` 模式：请求 `{SELVIN_API_URL}/models`
 
@@ -210,7 +261,7 @@ uv run --project . python -c \
 
 ```text
 <your-provider>
-<api|model_online>
+<parallel|api|model_online>
 <your-api-url>
 <your-model-name>
 ```
@@ -219,6 +270,7 @@ uv run --project . python -c \
 
 ## 注意事项
 
+- `parallel` 模式会合并 API 搜索和模型内置搜索的来源，最终回答由模型再次整理。
 - `api` 模式的 sources 更可控，因为它们来自搜索接口的结构化结果。
 - `model_online` 模式依赖模型和平台自己的联网能力。
 - 如果中文查询召回为 0，可以换成中英混合查询。

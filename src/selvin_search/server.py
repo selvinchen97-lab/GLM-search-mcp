@@ -18,6 +18,7 @@ try:
     from selvin_search.config import config
     from selvin_search.sources import SourcesCache, merge_sources, new_session_id, split_answer_and_sources
     from selvin_search.planning import engine as planning_engine, result_cache, _split_csv
+    from selvin_search.utils import parallel_synthesis_prompt
 except ImportError:
     from .providers.model_online import ModelOnlineSearchProvider
     from .providers.zhipu import ZhipuSearchProvider
@@ -25,6 +26,7 @@ except ImportError:
     from .config import config
     from .sources import SourcesCache, merge_sources, new_session_id, split_answer_and_sources
     from .planning import engine as planning_engine, result_cache, _split_csv
+    from .utils import parallel_synthesis_prompt
 
 import asyncio
 
@@ -73,6 +75,102 @@ async def _get_available_models_cached(api_url: str, api_key: str) -> list[str]:
     return models
 
 
+def _format_sources_for_synthesis(sources: list[dict]) -> str:
+    blocks: list[str] = []
+    for idx, item in enumerate(sources, start=1):
+        parts = [
+            f"[{idx}] {item.get('title') or item.get('url')}",
+            f"URL: {item.get('url')}",
+        ]
+        if item.get("provider"):
+            parts.append(f"Provider: {item['provider']}")
+        if item.get("source"):
+            parts.append(f"Media: {item['source']}")
+        if item.get("published_date"):
+            parts.append(f"Published: {item['published_date']}")
+        if item.get("description"):
+            parts.append(f"Description: {item['description']}")
+        blocks.append("\n".join(parts))
+    return "\n\n".join(blocks)
+
+
+def _tag_sources(sources: list[dict], provider: str) -> list[dict]:
+    tagged: list[dict] = []
+    for item in sources:
+        if not isinstance(item, dict):
+            continue
+        out = dict(item)
+        out.setdefault("provider", provider)
+        tagged.append(out)
+    return tagged
+
+
+async def _synthesize_parallel_answer(
+    api_url: str,
+    api_key: str,
+    model: str,
+    query: str,
+    api_answer: str,
+    online_answer: str,
+    sources: list[dict],
+) -> str:
+    import httpx
+
+    if not api_answer.strip() and not online_answer.strip():
+        return ""
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": parallel_synthesis_prompt},
+            {
+                "role": "user",
+                "content": (
+                    f"用户问题：{query}\n\n"
+                    "## API 搜索链路返回\n"
+                    f"{api_answer or '无可用回答'}\n\n"
+                    "## 模型内置联网链路返回\n"
+                    f"{online_answer or '无可用回答'}\n\n"
+                    "## MCP 已合并来源\n"
+                    f"{_format_sources_for_synthesis(sources) or '无可用来源'}"
+                ),
+            },
+        ],
+        "stream": False,
+        "max_tokens": config.max_tokens,
+    }
+
+    timeout = httpx.Timeout(connect=6.0, read=120.0, write=10.0, pool=None)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        response = await client.post(
+            f"{api_url.rstrip('/')}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
+        response.raise_for_status()
+        data = response.json()
+
+    choices = data.get("choices") or []
+    if not choices:
+        return ""
+    message = (choices[0] or {}).get("message") or {}
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict) and isinstance(item.get("text"), str):
+                parts.append(item["text"])
+            elif isinstance(item, str):
+                parts.append(item)
+        return "\n".join(parts).strip()
+    return ""
+
+
 @mcp.tool(
     name="web_search",
     output_schema=None,
@@ -110,7 +208,7 @@ async def web_search(
             }
 
     # ── Cached response shortcut ────────────────────────────
-    cache_payload = f"{platform}|{model}|{query}"
+    cache_payload = f"{config.search_mode}|{platform}|{model}|{query}"
     cached = await result_cache.get("web_search", cache_payload)
     if cached and isinstance(cached, dict):
         new_sid = new_session_id()
@@ -142,17 +240,61 @@ async def web_search(
             return {"session_id": session_id, "content": f"无效模型: {model}", "sources_count": 0}
         effective_model = config.effective_model(model)
 
-    if config.search_mode == "model_online":
-        search_provider = ModelOnlineSearchProvider(api_url, api_key, effective_model)
-    else:
-        search_provider = ZhipuSearchProvider(api_url, api_key, effective_model)
+    if config.search_mode == "parallel":
+        api_provider = ZhipuSearchProvider(api_url, api_key, effective_model)
+        online_provider = ModelOnlineSearchProvider(
+            config.online_api_url,
+            config.online_api_key,
+            config.online_model,
+        )
+        api_result, online_result = await asyncio.gather(
+            api_provider.search(query, platform),
+            online_provider.search(query, platform),
+            return_exceptions=True,
+        )
 
-    try:
-        primary_result = await search_provider.search(query, platform)
-    except Exception:
-        primary_result = ""
-    answer, primary_sources = split_answer_and_sources(primary_result)
-    all_sources = merge_sources(primary_sources)
+        api_raw = "" if isinstance(api_result, Exception) else api_result
+        online_raw = "" if isinstance(online_result, Exception) else online_result
+        api_answer, api_sources = split_answer_and_sources(api_raw)
+        online_answer, online_sources = split_answer_and_sources(online_raw)
+        api_sources = _tag_sources(api_sources, "api")
+        online_sources = _tag_sources(online_sources, "model_online")
+        all_sources = merge_sources(api_sources, online_sources)
+
+        try:
+            answer = await _synthesize_parallel_answer(
+                api_url=api_url,
+                api_key=api_key,
+                model=effective_model,
+                query=query,
+                api_answer=api_answer,
+                online_answer=online_answer,
+                sources=all_sources,
+            )
+        except Exception:
+            answer = ""
+
+        if not answer:
+            parts = []
+            if api_answer:
+                parts.append("## API 搜索链路\n\n" + api_answer)
+            if online_answer:
+                parts.append("## 模型内置联网链路\n\n" + online_answer)
+            answer = "\n\n".join(parts)
+        if not answer:
+            answer = "两条搜索链路都没有返回可用内容；因此本次回答未独立联网验证。"
+    else:
+        if config.search_mode == "model_online":
+            search_provider = ModelOnlineSearchProvider(api_url, api_key, effective_model)
+        else:
+            search_provider = ZhipuSearchProvider(api_url, api_key, effective_model)
+
+        try:
+            primary_result = await search_provider.search(query, platform)
+        except Exception:
+            primary_result = ""
+        answer, primary_sources = split_answer_and_sources(primary_result)
+        all_sources = merge_sources(primary_sources)
 
     await _SOURCES_CACHE.set(session_id, all_sources)
     await result_cache.set("web_search", cache_payload, {"content": answer, "sources": all_sources})
@@ -190,11 +332,11 @@ async def get_sources(
     name="get_config_info",
     output_schema=None,
     description="""
-    Returns current Selvin Search MCP server configuration and tests Zhipu API connectivity.
+    Returns current Selvin Search MCP server configuration and tests the configured upstream connectivity.
 
     **Key Features:**
         - **Configuration Check:** Verifies environment variables and current settings.
-        - **Connection Test:** Sends request to /web_search in api mode or /models in model_online mode.
+        - **Connection Test:** Sends request to /web_search in api mode, /models in model_online mode, or both in parallel mode.
 
     **Edge Cases & Best Practices:**
         - Use this tool first when debugging connection or configuration issues.
@@ -225,7 +367,50 @@ async def get_config_info() -> str:
         start_time = time.time()
 
         async with httpx.AsyncClient(timeout=10.0) as client:
-            if config.search_mode == "model_online":
+            if config.search_mode == "parallel":
+                api_response, online_response = await asyncio.gather(
+                    client.post(
+                        f"{api_url.rstrip('/')}/web_search",
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json"
+                        },
+                        json={
+                            "search_query": "智谱联网搜索连通性测试",
+                            "search_engine": config.zhipu_search_engine,
+                            "search_intent": False,
+                            "count": 1,
+                            "search_recency_filter": config.zhipu_recency_filter,
+                            "content_size": "medium",
+                        },
+                    ),
+                    client.get(
+                        f"{config.online_api_url.rstrip('/')}/models",
+                        headers={
+                            "Authorization": f"Bearer {config.online_api_key}",
+                            "Content-Type": "application/json"
+                        },
+                    ),
+                    return_exceptions=True,
+                )
+                response = api_response if not isinstance(api_response, Exception) else online_response
+                api_ok = not isinstance(api_response, Exception) and api_response.status_code == 200
+                online_ok = not isinstance(online_response, Exception) and online_response.status_code == 200
+                if api_ok and online_ok:
+                    test_result["status"] = "✅ 连接成功"
+                    test_result["message"] = "并行模式连通成功：/web_search 与 /models 均可访问"
+                    test_result["response_time_ms"] = round((time.time() - start_time) * 1000, 2)
+                    config_info["connection_test"] = test_result
+                    return json.dumps(config_info, ensure_ascii=False, indent=2)
+                test_result["status"] = "⚠️ 连接异常"
+                test_result["message"] = (
+                    f"并行模式连通性异常：api={'OK' if api_ok else 'FAIL'}, "
+                    f"model_online={'OK' if online_ok else 'FAIL'}"
+                )
+                test_result["response_time_ms"] = round((time.time() - start_time) * 1000, 2)
+                config_info["connection_test"] = test_result
+                return json.dumps(config_info, ensure_ascii=False, indent=2)
+            elif config.search_mode == "model_online":
                 response = await client.get(
                     f"{api_url.rstrip('/')}/models",
                     headers={
