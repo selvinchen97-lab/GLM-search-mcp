@@ -85,6 +85,7 @@ SELVIN_ONLINE_MODEL=<online-capable-model-name>
 
 - API 路线：来源来自智谱 `/web_search` 的 `search_result`
 - 模型内置路线：智谱/BigModel 默认通过 `chat/completions` 的 `tools.web_search` 触发搜索；其他 OpenAI-compatible 平台默认不传该工具，除非显式设置 `SELVIN_ONLINE_USE_SEARCH_TOOL=true`
+- 模型内置路线会在提示词中强制要求输出原始页面的 exact URLs；如果上游模型或搜索工具不暴露 URL，MCP 会把这次结果视为缺少可验证来源
 - 模型内置路线的来源来自模型回答里的 `## Sources`、Markdown 链接或 URL
 - 模型内置路线返回的 URL 会被 MCP 再访问一次，成功时会写入 `archive_status=fetched` 和 `archive_content`
 - `get_sources(session_id)` 返回的是两边来源合并去重后的列表

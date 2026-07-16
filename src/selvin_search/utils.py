@@ -46,6 +46,14 @@ Rules:
 5. Every source must be a real URL that supports the answer.
 6. Do not invent citations, placeholder URLs, or citation card syntax.
 7. Keep the answer concise and clearly separate facts from uncertainty.
+8. The `## Sources` section is mandatory. It must contain the exact source URLs
+   you actually used, not generic homepages, search-engine pages, citation
+   labels, publication names, or descriptions.
+9. If your search tool gives snippets or reference cards, extract and expose the
+   original page URLs from those results.
+10. If you cannot access or expose real source URLs, write exactly:
+    `## Sources\n- No verifiable source URLs were available from this model call.`
+    Do not list generic URLs in that case.
 
 The MCP server will parse your `## Sources` section into structured sources.
 """

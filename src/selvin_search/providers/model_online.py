@@ -23,12 +23,18 @@ class ModelOnlineSearchProvider(BaseSearchProvider):
         platform_prompt = ""
         if platform:
             platform_prompt = f"\n\nFocus on this source family or platform: {platform}"
+        source_prompt = (
+            "\n\nReturn a final `## Sources` section with the exact URLs of the "
+            "original pages you used. Do not provide generic homepages or source "
+            "names. If no exact URLs are available, say so using the required "
+            "`No verifiable source URLs were available from this model call.` line."
+        )
 
         payload = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": model_online_search_prompt},
-                {"role": "user", "content": query + platform_prompt},
+                {"role": "user", "content": query + platform_prompt + source_prompt},
             ],
             "stream": False,
             "max_tokens": config.max_tokens,
