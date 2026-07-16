@@ -5,6 +5,10 @@ Env-var prefix: SELVIN_*  (e.g. SELVIN_API_KEY, SELVIN_MODEL).
 Provider modes (SELVIN_PROVIDER):
   - zhipu (default): base_url=https://open.bigmodel.cn/api/paas/v4
   - custom:          user supplies SELVIN_API_URL & SELVIN_MODEL themselves
+
+Search modes (SELVIN_SEARCH_MODE):
+  - api (default):          call provider search API first, then summarize
+  - model_online:           ask an online-capable chat model to search directly
 """
 
 from __future__ import annotations
@@ -123,6 +127,13 @@ class Config:
         if v in _PROVIDER_DEFAULTS:
             return v
         return "zhipu"
+
+    @property
+    def search_mode(self) -> str:
+        v = (_env("SELVIN_SEARCH_MODE", default="api") or "api").strip().lower()
+        if v in {"api", "model_online"}:
+            return v
+        return "api"
 
     @property
     def api_url(self) -> str:
@@ -269,6 +280,7 @@ class Config:
 
         return {
             "SELVIN_PROVIDER": self.provider,
+            "SELVIN_SEARCH_MODE": self.search_mode,
             "SELVIN_API_URL": api_url,
             "SELVIN_API_KEY": api_key_masked,
             "SELVIN_MODEL": model,

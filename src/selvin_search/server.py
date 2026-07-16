@@ -12,12 +12,14 @@ from pydantic import Field
 
 # 尝试使用绝对导入（支持 mcp run）
 try:
+    from selvin_search.providers.model_online import ModelOnlineSearchProvider
     from selvin_search.providers.zhipu import ZhipuSearchProvider
     from selvin_search.logger import log_info
     from selvin_search.config import config
     from selvin_search.sources import SourcesCache, merge_sources, new_session_id, split_answer_and_sources
     from selvin_search.planning import engine as planning_engine, result_cache, _split_csv
 except ImportError:
+    from .providers.model_online import ModelOnlineSearchProvider
     from .providers.zhipu import ZhipuSearchProvider
     from .logger import log_info
     from .config import config
@@ -75,7 +77,7 @@ async def _get_available_models_cached(api_url: str, api_key: str) -> list[str]:
     name="web_search",
     output_schema=None,
     description="""
-    Performs a web search through Zhipu Web Search API, summarizes with the configured model, and caches the source list.
+    Performs a web search through the configured search mode and caches the source list.
 
     PLANNING GATE: when `plan_session_id` is provided, this tool refuses to run until the
     plan is complete (all required phases done, unverified_terms covered). If you intend to
@@ -83,7 +85,7 @@ async def _get_available_models_cached(api_url: str, api_key: str) -> list[str]:
 
     Returns:
       - session_id      string  pass to get_sources to retrieve full source list
-      - content         string  answer summarized from Zhipu search_result
+      - content         string  answer from API-search summarization or online model search
       - sources_count   int
       - cached          bool    true if response was served from in-memory result cache
       - budget          object  (when plan_session_id set) actual vs estimated tool calls
@@ -140,7 +142,10 @@ async def web_search(
             return {"session_id": session_id, "content": f"无效模型: {model}", "sources_count": 0}
         effective_model = config.effective_model(model)
 
-    search_provider = ZhipuSearchProvider(api_url, api_key, effective_model)
+    if config.search_mode == "model_online":
+        search_provider = ModelOnlineSearchProvider(api_url, api_key, effective_model)
+    else:
+        search_provider = ZhipuSearchProvider(api_url, api_key, effective_model)
 
     try:
         primary_result = await search_provider.search(query, platform)
@@ -189,7 +194,7 @@ async def get_sources(
 
     **Key Features:**
         - **Configuration Check:** Verifies environment variables and current settings.
-        - **Connection Test:** Sends request to Zhipu /web_search endpoint to validate API access.
+        - **Connection Test:** Sends request to /web_search in api mode or /models in model_online mode.
 
     **Edge Cases & Best Practices:**
         - Use this tool first when debugging connection or configuration issues.
@@ -220,27 +225,40 @@ async def get_config_info() -> str:
         start_time = time.time()
 
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                f"{api_url.rstrip('/')}/web_search",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "search_query": "智谱联网搜索连通性测试",
-                    "search_engine": config.zhipu_search_engine,
-                    "search_intent": False,
-                    "count": 1,
-                    "search_recency_filter": config.zhipu_recency_filter,
-                    "content_size": "medium",
-                },
-            )
+            if config.search_mode == "model_online":
+                response = await client.get(
+                    f"{api_url.rstrip('/')}/models",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json"
+                    },
+                )
+            else:
+                response = await client.post(
+                    f"{api_url.rstrip('/')}/web_search",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "search_query": "智谱联网搜索连通性测试",
+                        "search_engine": config.zhipu_search_engine,
+                        "search_intent": False,
+                        "count": 1,
+                        "search_recency_filter": config.zhipu_recency_filter,
+                        "content_size": "medium",
+                    },
+                )
 
             response_time = (time.time() - start_time) * 1000  # 转换为毫秒
 
             if response.status_code == 200:
                 test_result["status"] = "✅ 连接成功"
-                test_result["message"] = f"智谱 Web Search API 连通成功 (HTTP {response.status_code})"
+                test_result["message"] = (
+                    f"模型 API /models 连通成功 (HTTP {response.status_code})"
+                    if config.search_mode == "model_online"
+                    else f"智谱 Web Search API 连通成功 (HTTP {response.status_code})"
+                )
                 test_result["response_time_ms"] = round(response_time, 2)
             else:
                 test_result["status"] = "⚠️ 连接异常"
